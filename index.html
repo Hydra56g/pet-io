@@ -163,25 +163,37 @@ class Arena{
   if(s.id===0){this.endReason=why;this.events.push({type:'dead'});}
  }
  collisions(){
-  const living=this.actors.filter(s=>s?.alive),fatal=new Map(),front=new Map(living.map(s=>[s,new Set()]));
+  const living=this.actors.filter(s=>s?.alive),fatal=new Map();
   for(const s of living)if(Math.hypot(s.x,s.y)>R-headRadius(s.mass))fatal.set(s,[null,'Tu as heurté le mur de la salle.']);
-  // Resolve head-to-head once, before considering bodies, from the same frame.
-  for(let i=0;i<living.length;i++)for(let j=i+1;j<living.length;j++){
-   const a=living[i],b=living[j];if(a.safe>0||b.safe>0||fatal.has(a)||fatal.has(b))continue;
-   if(distance(a,b)>=headRadius(a.mass)+headRadius(b.mass)-2)continue;
-   front.get(a).add(b);front.get(b).add(a);
+  const vulnerable=living.filter(s=>s.safe<=0&&!fatal.has(s));
+  const contact=new Map(vulnerable.map(s=>[s,new Set()]));
+  const headHits=[];
+  const bodyHits=[];
+  const hitsFromBehind=(s,o,dx,dy,gap)=>{
+   // The attacker is behind the other head and moving toward it.
+   return dx*Math.cos(o.a)+dy*Math.sin(o.a)>gap*.45
+    &&dx*Math.cos(s.a)+dy*Math.sin(s.a)>gap*.18;
+  };
+  for(let i=0;i<vulnerable.length;i++)for(let j=i+1;j<vulnerable.length;j++){
+   const a=vulnerable[i],b=vulnerable[j],dx=b.x-a.x,dy=b.y-a.y,gap=Math.hypot(dx,dy);
+   if(gap>=headRadius(a.mass)+headRadius(b.mass)-2)continue;
+   contact.get(a).add(b);contact.get(b).add(a);
+   if(hitsFromBehind(a,b,dx,dy,gap))bodyHits.push([a,b]);
+   else if(hitsFromBehind(b,a,-dx,-dy,gap))bodyHits.push([b,a]);
+   else headHits.push([a,b]);
   }
-  for(const s of living){if(s.safe>0||fatal.has(s))continue;
-   const rivals=[...front.get(s)].filter(o=>o.mass>=s.mass);
-   if(rivals.length){const o=rivals.sort((a,b)=>b.mass-a.mass||a.id-b.id)[0];fatal.set(s,[o,'Choc frontal avec '+o.name+'.']);}
-  }
-  for(const s of living){if(s.safe>0||fatal.has(s))continue;
-   for(const o of living){if(o===s||o.safe>0||front.get(s).has(o))continue;
+  for(const s of vulnerable){
+   for(const o of vulnerable){
+    if(o===s||contact.get(s).has(o))continue;
     const reach=headRadius(s.mass)+radius(o.mass)-2;
-    if(this.nearBody(s,o,reach,Math.max(1,Math.floor(headRadius(o.mass)/STEP)))){
-     fatal.set(s,[o,'Tu as mordu la traîne de '+o.name+'.']);break;
-    }
+    const neck=Math.max(1,Math.ceil((headRadius(o.mass)-o.stepRemainder)/STEP));
+    if(this.nearBody(s,o,reach,neck))bodyHits.push([s,o]);
    }
+  }
+  for(const [s,o] of bodyHits)if(!fatal.has(s))fatal.set(s,[o,'Tu as percuté la traîne de '+o.name+'.']);
+  for(const [a,b] of headHits){
+   if(a.mass<=b.mass&&!fatal.has(a))fatal.set(a,[b,'Choc frontal avec '+b.name+'.']);
+   if(b.mass<=a.mass&&!fatal.has(b))fatal.set(b,[a,'Choc frontal avec '+a.name+'.']);
   }
   for(const [s,[k,why]] of fatal)this.kill(s,k,why);
  }
@@ -249,26 +261,43 @@ function initPaint(){
   const variants=[];
   for(let v=0;v<4;v++){
    const c=surf(128),g=c.getContext('2d'),rng=noise(14621+t*711+v*97);
-   const colors=['#764622','#9d5727','#7f8530','#c3a438'],col=colors[t];
-   oval(g,64,100,54,15,'#100a06b0');
-   const puddle=new Path2D();for(let i=0;i<=64;i++){const a=i/64*TAU,k=1+.13*Math.sin(a*7+v)+.09*Math.cos(a*11+t);const x=64+Math.cos(a)*54*k,y=99+Math.sin(a)*16*k;i?puddle.lineTo(x,y):puddle.moveTo(x,y);}puddle.closePath();
-   g.fillStyle='#777b2d8e';g.fill(puddle);g.strokeStyle='#bfbc5b79';g.lineWidth=2;g.stroke(puddle);
-   for(let j=0;j<9;j++){const x=12+rng()*104,y=91+rng()*23;oval(g,x,y,1+rng()*5,1+rng()*2,'#bba85190');}
-   // Uneven stacked lumps rather than an emoji silhouette.
-   const lumps=[[57,85,40,25],[84,79,26,22],[49,63,29,25],[73,50,24,21],[59,31,16,19]];
-   for(const [cx,cy,rx,ry] of lumps){
-    const x=cx+(rng()-.5)*8,y=cy+(rng()-.5)*7,body=new Path2D();
-    for(let i=0;i<=48;i++){const a=i/48*TAU,k=1+.09*Math.sin(a*5+v)+.05*Math.cos(a*9+t);const px=x+Math.cos(a)*rx*k,py=y+Math.sin(a)*ry*k;i?body.lineTo(px,py):body.moveTo(px,py);}body.closePath();
-    const grad=g.createRadialGradient(x-rx*.35,y-ry*.55,1,x,y,Math.max(rx,ry)*1.12);
-    grad.addColorStop(0,mix(col,.30));grad.addColorStop(.5,col);grad.addColorStop(1,'#29170e');g.fillStyle=grad;g.fill(body);g.strokeStyle='#29170e';g.lineWidth=2.8;g.stroke(body);
-    g.save();g.clip(body);
-    for(let i=0;i<40;i++){const px=x+(rng()-.5)*rx*2,py=y+(rng()-.5)*ry*2,r=1+rng()*4;oval(g,px,py,r,r*.6,i%4===0?'#d6b95a9c':i%3===0?'#2a1c13aa':'#a58a4d66');}
-    for(let i=0;i<5;i++){const px=x+(rng()-.5)*rx,py=y+(rng()-.8)*ry;oval(g,px,py,2+rng()*6,1+rng()*1.5,'#ffecb67d');}
-    for(let j=0;j<13;j++){const px=x+(rng()-.5)*rx*1.65,py=y+(rng()-.5)*ry*1.65,rr=1+rng()*3;oval(g,px,py,rr,rr*.72,'#30160cba');oval(g,px-.8,py-1,rr*.5,rr*.28,'#ffe0a2a3');}
-    g.beginPath();g.moveTo(x-rx*.75,y-ry*.25);g.quadraticCurveTo(x,y+ry*.5,x+rx*.65,y-ry*.2);g.strokeStyle='#311a12bb';g.lineWidth=2;g.stroke();
+   const colors=['#774523','#814924','#704425','#91552b'];
+   const shapes=[
+    [[34,71,20,13,-.25],[62,64,27,16,-.25],[92,55,14,10,-.4]],
+    [[40,77,26,16,.2],[65,73,27,19,-.35],[80,51,23,17,-.55]],
+    [[38,80,22,14,.2],[61,81,31,19,.1],[82,64,26,19,-.55],[63,47,22,15,.45]],
+    [[34,78,23,15,.2],[62,83,35,19,.05],[91,72,22,18,-.6],[76,54,30,18,.18],[48,42,21,13,.65]]
+   ];
+   const theta=(v-1.5)*.47;
+   g.translate(64,64);g.rotate(theta);g.translate(-64,-64);
+   const shadow=g.createRadialGradient(64,80,6,64,80,55);
+   shadow.addColorStop(0,'#140d09d9');shadow.addColorStop(1,'#140d0900');
+   oval(g,64,80,57,24,shadow);
+   for(const [cx,cy,rx,ry,angle] of shapes[t]){
+    g.save();g.translate(cx+(rng()-.5)*10,cy+(rng()-.5)*8);g.rotate(angle);
+    const body=new Path2D();
+    for(let i=0;i<=64;i++){
+     const a=i/64*TAU,k=1+.10*Math.sin(a*5+v)+.064*Math.cos(a*8+t)+.029*Math.sin(a*13+cx);
+     const x=Math.cos(a)*rx*k,y=Math.sin(a)*ry*k;
+     if(i)body.lineTo(x,y);else body.moveTo(x,y);
+    }
+    body.closePath();
+    const grad=g.createLinearGradient(-rx*.2,-ry,rx*.42,ry);
+    grad.addColorStop(0,mix(colors[t],.24));grad.addColorStop(.38,colors[t]);grad.addColorStop(.82,'#4b2a18');grad.addColorStop(1,'#27160e');
+    g.fillStyle=grad;g.fill(body);g.clip(body);
+    for(let i=0;i<70;i++){
+     const x=(rng()-.5)*rx*2,y=(rng()-.5)*ry*2,r=.7+rng()*3;
+     oval(g,x,y,r,r*.57,i%7===0?'#ba894b99':i%2?'#331b1199':'#a4673a77');
+    }
+    g.lineCap='round';
+    for(let i=0;i<4;i++){
+     const x=(i-1.5)*rx*.43,y=-ry*(.75+rng()*.2);
+     g.beginPath();g.moveTo(x,y);g.bezierCurveTo(x+8,y+6,x-8,y+ry*.65,x+2,y+ry*1.12);
+     g.strokeStyle='#382015a8';g.lineWidth=1.4+rng()*2.4;g.stroke();
+     oval(g,x-2,y+5,2+rng()*4,1+rng()*1.4,'#dfb48177');
+    }
     g.restore();
    }
-   for(let i=0;i<6;i++){const x=18+rng()*93,y=90+rng()*13;oval(g,x,y,1+rng()*4,1+rng()*2,'#b4a63ca0');}
    variants.push(c);
   }poops.push(variants);
  }
@@ -386,12 +415,13 @@ function demo(t){
  }
 }
 
-// Le même échantillon de pet tourne sans interruption pendant tout le boost.
+// Le pet varie en cadence pendant le boost. Le fichier intégré sert de repli.
+const BOOST_AUDIO=new URL("./assets/boost.mp3",document.baseURI).href;
 // Les voix sont des fichiers ElevenLabs intégrés. Le gain et le panoramique
 // suivent la position réelle du locuteur à chaque image.
 class SalleAudio{
  constructor(){
-  this.ctx=null;this.master=null;this.cache=new Map();this.boostNode=null;this.boostGain=null;this.boostToken=0;this.wantsBoost=false;
+  this.ctx=null;this.master=null;this.cache=new Map();this.boostBuffer=null;this.boostNode=null;this.boostGain=null;this.boostToken=0;this.wantsBoost=false;
   this.active=null;this.bags=[[],[]];this.last=[-1,-1];this.next=1.1;this.selfWait=12;
   this.enabled=true;try{this.enabled=localStorage.getItem('pet-io-son')!=='0';}catch{}
  }
@@ -400,6 +430,12 @@ class SalleAudio{
   try{
    const AC=window.AudioContext||window.webkitAudioContext;
    if(!this.ctx&&AC){this.ctx=new AC();this.master=this.ctx.createGain();this.master.gain.value=.9;this.master.connect(this.ctx.destination);}
+   if(this.ctx&&!this.boostBuffer){
+    this.boostBuffer=fetch(BOOST_AUDIO).then(response=>{
+     if(!response.ok)throw new Error('Son du boost indisponible');
+     return response.arrayBuffer();
+    }).then(bytes=>this.ctx.decodeAudioData(bytes)).catch(()=>null);
+   }
    if(this.ctx?.state==='suspended')this.ctx.resume().catch(()=>{});
   }catch{}
  }
@@ -418,12 +454,12 @@ class SalleAudio{
    if(n){if(g){g.gain.cancelScheduledValues(this.ctx.currentTime);g.gain.setTargetAtTime(.0001,this.ctx.currentTime,.018);try{n.stop(this.ctx.currentTime+.09);}catch{}}
     else n.pause();}return;}
   if(!this.ctx){this.fallbackBoost(token);return;}
-  this.buffer('boost',MEDIA.boost).then(b=>{if(!this.wantsBoost||token!==this.boostToken)return;
-   const n=this.ctx.createBufferSource(),g=this.ctx.createGain();n.buffer=b;n.loop=true;g.gain.value=.0001;g.gain.setTargetAtTime(this.active?.21:.51,this.ctx.currentTime,.024);
+  Promise.resolve(this.boostBuffer).then(b=>b??this.buffer('boost',MEDIA.boost)).then(b=>{if(!this.wantsBoost||token!==this.boostToken)return;
+   const n=this.ctx.createBufferSource(),g=this.ctx.createGain();n.buffer=b;n.loop=true;n.playbackRate.value=random(.91,1.09);g.gain.value=.0001;g.gain.setTargetAtTime(this.active?.21:.51,this.ctx.currentTime,.024);
    n.connect(g);g.connect(this.master);n.onended=()=>{n.disconnect();g.disconnect();};n.start();this.boostNode=n;this.boostGain=g;
   }).catch(()=>this.fallbackBoost(token));
  }
- fallbackBoost(token){if(token!==this.boostToken||!this.wantsBoost)return;const a=new Audio(MEDIA.boost);a.loop=true;a.volume=this.active?.19:.44;this.boostNode=a;a.play().catch(()=>{});}
+ fallbackBoost(token){if(token!==this.boostToken||!this.wantsBoost)return;const a=new Audio(BOOST_AUDIO);a.addEventListener('error',()=>{if(this.boostNode===a&&a.src!==MEDIA.boost){a.src=MEDIA.boost;a.play().catch(()=>{});}},{once:true});a.loop=true;a.volume=this.active?.19:.44;this.boostNode=a;a.play().catch(()=>{});}
  take(fam){
   const bag=this.bags[fam];if(!bag.length){for(let i=0;i<20;i++)bag.push(i);for(let i=bag.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[bag[i],bag[j]]=[bag[j],bag[i]];}
    if(bag.at(-1)===this.last[fam])[bag[0],bag[bag.length-1]]=[bag.at(-1),bag[0]];}
